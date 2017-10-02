@@ -1,0 +1,205 @@
+<?php namespace ProcessWire;
+
+/**
+ * Field Page Sync (ProcessWire 3.x)
+ *
+ * Configurable bidirectional save of PageFields. Saving a Pagefield will also update the
+ * linked pages with the page being saved.
+ *
+ * Copyright (C) 2017 by Martijn Geerts
+ * Licensed under MIT License, see LICENSE.TXT
+ *
+ */
+class FieldPageSync extends WireData implements Module, ConfigurableModule {
+
+	/**
+	 * Return info about this Module
+	 *
+	 * @return array
+	 *
+	 */
+	public static function getModuleInfo() {
+		return array(
+			'title' => 'Field Page Sync',
+			'summary' => 'Configurable bidirectional save of PageFields.',
+			'version' => '0.0.1',
+			'author' => 'Martijn Geerts',
+			'singular' => true,
+			'autoload' => true,
+			'icon' => 'link',
+			'requiresVersions' => array(
+				'PHP' => array('>=', '5.3.6'),
+				'ProcessWire' => array('>=', '3.0.76'),
+				),
+			);
+	}
+
+	/**
+	 * Get old values
+	 *
+	 * Get values directly from Database (old values)
+	 *
+	 * @param Page $page
+	 * @param string $fieldname
+	 * @return array Array containing integers
+	 *
+	 */
+	private function getPreviousValues(Page $page, $fieldname) {
+		$a = array();
+		$database = $this->wire('database');
+		$query = $database->prepare("SELECT data FROM field_" . $fieldname . " WHERE pages_id=:pages_id");
+		$query->bindValue(":pages_id", $page->id, \PDO::PARAM_INT);
+		$query->execute();
+		while($row = $query->fetch(\PDO::FETCH_ASSOC)) $a[] = (int) $row['data'];
+		return $a;
+	}
+
+	/**
+	 * Modify target
+	 *
+	 * @param Page $page
+	 * @param string $fieldname Fieldname of target page
+	 * @param array Array containing IDs
+	 * @param boolean $addPage (true to add, false to remove)
+	 *
+	 */
+	private function modifyTargetField(Page $page, $fieldname, array $values, $addPage = true) {
+		if (!count($values)) return;
+		$pages = $this->wire('pages');
+		foreach ($values as $id) {
+			$target = $pages->get($id);
+			$pageArray = $target->get($fieldname);
+
+			if ($addPage === true) {
+				$pageArray->add($page);
+			} else {
+				$pageArray->remove($page);
+			}
+
+			$pages->___saveField($target, $fieldname, array(
+				'quiet' => ($this->quiet ? true : false),
+				'noHooks' => true,
+			));
+		}
+	}
+
+	/**
+	 * Extract sync settings from config
+	 *
+	 * @return boolean
+	 *
+	 */
+	private function extractSyncSettings() {
+		if (!$this->textSyncSettings) return false;
+		$syncSettings = $this->syncSettings;
+		if (count($syncSettings) > 0) return true;
+
+		$fields = $this->wire('fields');
+		$templates = $this->wire('templates');
+		$textLines = explode(PHP_EOL, trim($this->textSyncSettings));
+
+		foreach ($textLines as $key => $line) {
+			$parts = explode('|', $line);
+			$syncSettings[$key] = array();
+			foreach($parts as $pairString) {
+				$strings = explode(':', trim($pairString));
+				$template = $templates->get($strings[0]);
+				if (!($template instanceof Template)) continue;
+				$field = $template->fieldgroup->fields->get($strings[1]);
+				if (!$field || !($field->type instanceof FieldtypePage)) continue;
+
+				$syncSettings[$key][] = array(
+					'templatename' => $strings[0],
+					'fieldname' => $strings[1],
+				);
+			}
+			if (count($syncSettings[$key]) !== 2) {
+				$this->error("Syntax error or invalid field or template name on line: “" . $line . "”");
+				unset($syncSettings[$key]);
+			}
+		}
+
+		$this->set('syncSettings', $syncSettings);
+		return count($syncSettings) > 0;
+	}
+
+	/**
+	 * After Pages::saveReady
+	 *
+	 * @param HookEvent $event
+	 *
+	 */
+	public function afterPagesSaveReady(HookEvent $event) {
+		if (!$this->extractSyncSettings()) return;
+
+		$page = $event->arguments(0);
+		$changes = $page->getChanges();
+		if (count($changes) === 0) return;
+
+		foreach ($this->syncSettings as $setIndex => $sets) {
+			foreach($sets as $setIndex => $set) {
+				if ($set['templatename'] !== $page->template->name) continue;
+				$fieldname = $set['fieldname'];
+				if (!in_array($fieldname, $changes)) continue;
+
+				$previousValues = $this->getPreviousValues($page, $fieldname);
+				$currentValues = $page->get($fieldname)->explode('id');
+
+				$deletedValues = array_diff($previousValues, $currentValues);
+				$addedValues = array_diff($currentValues, $previousValues);
+				$shouldSave = count($deletedValues) + count($addedValues);
+				if ($shouldSave === 0) return;
+				$i = $setIndex === 0 ? 1 : 0;
+				$targetFieldName = $sets[$i]['fieldname'];
+				if (count($addedValues)) $this->modifyTargetField($page, $targetFieldName, $addedValues, true);
+				if (count($deletedValues)) $this->modifyTargetField($page, $targetFieldName, $deletedValues, false);
+			}
+		}
+	}
+
+	/**
+	 * Initialize Module
+	 *
+	 */
+	public function init() {
+		$this->set('syncSettings', array());
+		$this->addHookAfter('Pages::saveReady', $this, 'afterPagesSaveReady');
+	}
+
+	/**
+	 * Module configuration
+	 *
+	 * @param InputfieldWrapper $inputfields
+	 *
+	 */
+	public function getModuleConfigInputfields(InputfieldWrapper $inputfields) {
+		$modules = $this->wire('modules');
+
+		$description =
+			$this->_("Sync settings, each rule on 1 line.\n") .
+			$this->_("Saving field “x” on page “A”, will save “A” (page) in field “y” on page “B”.");
+
+		$name = 'textSyncSettings';
+		$f = $modules->get('InputfieldTextarea');
+		$f->set('name', $name);
+		$f->set('label', $this->_("Bidirectional Pagefield settings."));
+		$f->set('required', true);
+		$f->set('description', $description);
+		$f->set('notes', $this->_("syntax: template:field|template:field."));
+		$f->attr('value', $this->get($name));
+		$inputfields->add($f);
+
+		$name = 'quiet';
+		$f = $modules->get('InputfieldCheckbox');
+		$f->set('name', $name);
+		$f->set('label', $this->_("Save quiet."));
+		$f->set('label2', $this->_("true"));
+		$f->set('description', $this->_("Specify true to bypass updating of modified user and time."));
+		$f->attr('value', $this->get($name));
+		$f->attr('checked', $this->get($name));
+		$f->attr('autocheck', 1);
+		$inputfields->add($f);
+	}
+}
+
+
