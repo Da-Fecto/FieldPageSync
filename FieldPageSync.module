@@ -21,8 +21,8 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Field Page Sync',
-			'summary' => 'Configurable bidirectional save of PageFields.',
-			'version' => '0.0.1',
+			'summary' => 'Cross link saves of Pagefields.',
+			'version' => '0.0.2',
 			'author' => 'Martijn Geerts',
 			'singular' => true,
 			'autoload' => true,
@@ -99,18 +99,18 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 		$textLines = explode(PHP_EOL, trim($this->textSyncSettings));
 
 		foreach ($textLines as $key => $line) {
-			$parts = explode('|', $line);
+			$sets = explode('|', $line);
 			$syncSettings[$key] = array();
-			foreach($parts as $pairString) {
-				$strings = explode(':', trim($pairString));
-				$template = $templates->get($strings[0]);
+			foreach($sets as $set) {
+				$names = explode(':', trim($set));
+				$template = $templates->get($names[0]);
 				if (!($template instanceof Template)) continue;
-				$field = $template->fieldgroup->fields->get($strings[1]);
+				$field = $template->fieldgroup->fields->get($names[1]);
 				if (!$field || !($field->type instanceof FieldtypePage)) continue;
 
 				$syncSettings[$key][] = array(
-					'templatename' => $strings[0],
-					'fieldname' => $strings[1],
+					'templatename' => $names[0],
+					'fieldname' => $names[1],
 				);
 			}
 			if (count($syncSettings[$key]) !== 2) {
@@ -121,6 +121,22 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 
 		$this->set('syncSettings', $syncSettings);
 		return count($syncSettings) > 0;
+	}
+
+	/**
+	 * Force update references
+	 *
+	 */
+	public function forceUpdate() {
+		if (!$this->extractSyncSettings()) return;
+		$pages = $this->wire('pages');
+		$syncSettings = $this->syncSettings;
+		foreach ($this->syncSettings as $lineIndex => $sets) {
+			foreach($sets as $setIndex => $set) {
+				//$results = $pages->find('template.name=' . $set['templatename'] . ', ' . $set['fieldname'] . "!=''");
+			}
+		}
+		$this->set('syncSettings', $syncSettings);
 	}
 
 	/**
@@ -136,7 +152,7 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 		$changes = $page->getChanges();
 		if (count($changes) === 0) return;
 
-		foreach ($this->syncSettings as $setIndex => $sets) {
+		foreach ($this->syncSettings as $lineIndex => $sets) {
 			foreach($sets as $setIndex => $set) {
 				if ($set['templatename'] !== $page->template->name) continue;
 				$fieldname = $set['fieldname'];
@@ -144,13 +160,12 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 
 				$previousValues = $this->getPreviousValues($page, $fieldname);
 				$currentValues = $page->get($fieldname)->explode('id');
-
 				$deletedValues = array_diff($previousValues, $currentValues);
 				$addedValues = array_diff($currentValues, $previousValues);
-				$shouldSave = count($deletedValues) + count($addedValues);
-				if ($shouldSave === 0) return;
-				$i = $setIndex === 0 ? 1 : 0;
-				$targetFieldName = $sets[$i]['fieldname'];
+
+				if ((count($deletedValues) + count($addedValues)) === 0) return;
+				$targetFieldName = $sets[($setIndex === 0 ? 1 : 0)]['fieldname'];
+
 				if (count($addedValues)) $this->modifyTargetField($page, $targetFieldName, $addedValues, true);
 				if (count($deletedValues)) $this->modifyTargetField($page, $targetFieldName, $deletedValues, false);
 			}
@@ -177,12 +192,13 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 
 		$description =
 			$this->_("Sync settings, each rule on 1 line.\n") .
-			$this->_("Saving field “x” on page “A”, will save “A” (page) in field “y” on page “B”.");
+			$this->_("Adding page “P2” to field “F1” on page “P1”, will add page “P1” to field “F2” on page “P2”.\n") .
+			$this->_("Deteling page “P2” from field “F1” on page “P1”, will delete page “P1” from field “F2” on page “P2”.");
 
 		$name = 'textSyncSettings';
 		$f = $modules->get('InputfieldTextarea');
 		$f->set('name', $name);
-		$f->set('label', $this->_("Bidirectional Pagefield settings."));
+		$f->set('label', $this->_("Bidirectional Pagefield save settings."));
 		$f->set('required', true);
 		$f->set('description', $description);
 		$f->set('notes', $this->_("syntax: template:field|template:field."));
@@ -199,7 +215,27 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 		$f->attr('checked', $this->get($name));
 		$f->attr('autocheck', 1);
 		$inputfields->add($f);
+
+		$name = 'forceUpdate';
+		$updating = $this->get($name);
+
+		if (!$updating) {
+			$f = $modules->get('InputfieldCheckbox');
+			$f->set('name', $name);
+			$f->set('label', $this->_("Force update all references."));
+			$f->set('label2', $this->_("Force update"));
+			$f->set('description', $this->_("Force update references may take a long time to finish."));
+			$f->attr('value', $updating);
+			$f->attr('autocheck', 1);
+			$inputfields->add($f);
+		} else {
+			$f = $modules->get('InputfieldHidden');
+			$f->set('name', $name);
+			$f->attr('value', $updating ? 0 : 1);
+			$inputfields->add($f);
+
+			if ($this->forceUpdate()) {
+			}
+		}
 	}
 }
-
-
