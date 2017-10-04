@@ -133,7 +133,24 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 		$syncSettings = $this->syncSettings;
 		foreach ($this->syncSettings as $lineIndex => $sets) {
 			foreach($sets as $setIndex => $set) {
-				//$results = $pages->find('template.name=' . $set['templatename'] . ', ' . $set['fieldname'] . "!=''");
+				$currentFieldName = $sets[$setIndex]['fieldname'];
+				$targetFieldName = $sets[($setIndex === 0 ? 1 : 0)]['fieldname'];
+				$selector = 'template.name=' . $set['templatename'] . ', ' . $set['fieldname'] . "!=''";
+				$count = $pages->count($selector);
+				$current = 0;
+				$limit = 30;
+				do {
+					$results = $pages->find($selector . ', start=' . $current . ', limit=' . $limit);
+					foreach ($results as $page) {
+						$values = $page->get($currentFieldName)->explode('id');
+						foreach($page->get($currentFieldName) as $p) {
+							$this->modifyTargetField($page, $targetFieldName, $values, true);
+						}
+					}
+
+					$current += $limit;
+					\set_time_limit(30);
+				} while ($current + $limit <= $count);
 			}
 		}
 		$this->set('syncSettings', $syncSettings);
@@ -217,25 +234,14 @@ class FieldPageSync extends WireData implements Module, ConfigurableModule {
 		$inputfields->add($f);
 
 		$name = 'forceUpdate';
-		$updating = $this->get($name);
-
-		if (!$updating) {
-			$f = $modules->get('InputfieldCheckbox');
-			$f->set('name', $name);
-			$f->set('label', $this->_("Force update all references."));
-			$f->set('label2', $this->_("Force update"));
-			$f->set('description', $this->_("Force update references may take a long time to finish."));
-			$f->attr('value', $updating);
-			$f->attr('autocheck', 1);
-			$inputfields->add($f);
-		} else {
-			$f = $modules->get('InputfieldHidden');
-			$f->set('name', $name);
-			$f->attr('value', $updating ? 0 : 1);
-			$inputfields->add($f);
-
-			if ($this->forceUpdate()) {
-			}
-		}
+		$value = (int) $this->get($name);
+		$f = $modules->get('InputfieldCheckbox');
+		$f->set('name', $name);
+		$f->set('label', $this->_("Force update all references."));
+		$f->set('label2', $this->_("Force update"));
+		$f->set('description', $this->_("Force update references may take a long time to finish."));
+		$f->attr('value', $value === 1 ? 0 : 1);
+		$inputfields->add($f);
+		if ($value) $this->forceUpdate();
 	}
 }
